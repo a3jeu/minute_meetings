@@ -1,0 +1,506 @@
+# --- code cell 0 ---
+gpu_info = !nvidia-smi
+gpu_info = '\n'.join(gpu_info)
+if gpu_info.find('failed') >= 0:
+  print('Not connected to a GPU')
+else:
+  print(gpu_info)
+  print("Connected to a GPU")
+
+# --- code cell 1 ---
+import torch
+
+# Check if we are running on GPU
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+print(f"Using device: {device}")
+
+# --- code cell 2 ---
+# imports
+
+import os
+import requests
+import subprocess
+from IPython.display import Markdown, display, update_display
+from openai import OpenAI
+from huggingface_hub import login
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer, BitsAndBytesConfig
+from transformers import pipeline
+from datetime import datetime
+# import torch # already imported above
+
+# --- code cell 3 ---
+# Constants
+
+LLAMA = "meta-llama/Llama-3.2-3B-Instruct"
+
+# --- code cell 4 ---
+# Sign in to HuggingFace Hub
+
+hf_token = os.getenv("HF_TOKEN")
+login(hf_token, add_to_git_credential=True)
+
+# --- code cell 5 ---
+video_filename = "2025-12-15 11-58-31 - Copie.mkv"
+video_fullpath = "videos/" + video_filename
+
+# --- code cell 6 ---
+# Dynamically set audio_filename based on video filename
+audio_filename = os.path.basename(video_filename).replace(".mkv", ".mp3")
+audio_fullpath = "audio/" + audio_filename
+
+print(f"Audio filename: {audio_filename}")
+print(f"Audio will be saved to: {audio_fullpath}")
+
+# --- code cell 7 ---
+result = subprocess.run(
+    ["ffmpeg", "-i", video_fullpath, "-q:a", "0", "-map", "a", audio_fullpath, "-y"],
+    capture_output=True,
+    text=True
+)
+
+# --- code cell 8 ---
+# Check length of audio file (in minutes)
+result = subprocess.run(
+    ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_fullpath],
+    capture_output=True,
+    text=True
+)
+
+if result.returncode == 0:
+    duration_seconds = float(result.stdout.strip())
+    duration_minutes = duration_seconds / 60
+    print(f"Durée de l'audio : {duration_minutes:.2f} minutes")
+else:
+    print("Erreur lors de la récupération de la durée de l'audio")
+    print(result.stderr)
+
+# --- code cell 9 ---
+SPLIT_THRESHOLD = 10 # minutes
+
+# Chunk audio file if longer than 15 minutes (in 15 minutes segments)
+audio_filenames = []
+
+if duration_minutes > SPLIT_THRESHOLD:
+    num_chunks = int(duration_minutes // SPLIT_THRESHOLD) + (1 if duration_minutes % SPLIT_THRESHOLD > 0 else 0)
+    for i in range(num_chunks):
+        start_time = i * SPLIT_THRESHOLD * 60
+        output_chunk = audio_fullpath.replace(".mp3", f"_part{i+1}.mp3")
+        audio_filenames.append(output_chunk)
+        subprocess.run(
+            ["ffmpeg", "-i", audio_fullpath, "-ss", str(start_time), "-t", str(SPLIT_THRESHOLD * 60), output_chunk, "-y"],
+            capture_output=True,
+            text=True
+        )
+        print(f"Created chunk: {output_chunk}")
+else:
+    audio_filenames.append(audio_fullpath)
+
+# --- code cell 10 ---
+# Define pipeline
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Pipeline Whisper utilisera: {device}")
+
+pipe = pipeline(
+    "automatic-speech-recognition",
+    model="openai/whisper-medium",
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    device=device,
+    return_timestamps=True
+)
+
+# --- code cell 11 ---
+transcripts = []
+transcript_filenames = []
+for audio_filename in audio_filenames:
+    print(f"Processing file: {audio_filename}")
+    result = pipe(audio_filename, generate_kwargs={"language": "french"})
+    transcription = result["text"]
+    print(transcription)
+
+    # Save transcription to a text file (in transcript folder)
+    transcript_folder = "transcripts"
+    os.makedirs(transcript_folder, exist_ok=True)
+    transcript_filename = os.path.join(transcript_folder, os.path.basename(audio_filename).replace(".mp3", ".txt"))
+
+    with open(transcript_filename, "w", encoding="utf-8") as f:
+        f.write(transcription)
+    transcripts.append(transcription)
+    transcript_filenames.append(transcript_filename)
+
+# --- code cell 12 ---
+display(Markdown(transcription))
+
+# --- code cell 13 ---
+print(audio_fullpath)
+
+# --- code cell 14 ---
+audio_file = open(audio_fullpath, "rb")
+
+# --- code cell 15 ---
+# Open files
+audio_files = []
+for filename in audio_filenames:
+    audio_file = open(filename, "rb")
+    audio_files.append(audio_file)
+
+# --- code cell 16 ---
+# Sign in to OpenAI
+
+AUDIO_MODEL = "gpt-4o-mini-transcribe"
+
+openai = OpenAI()
+
+transcripts = []
+transcript_filenames = []
+
+for audio_file, audio_filename in zip(audio_files, audio_filenames):
+    transcription = openai.audio.transcriptions.create(
+        model=AUDIO_MODEL, 
+        file=audio_file, 
+        response_format="text", 
+        language="fr",
+    )
+    
+    # Save transcription to a text file (in transcript folder)
+    transcript_folder = "transcripts"
+    os.makedirs(transcript_folder, exist_ok=True)
+    transcript_filename = os.path.join(transcript_folder, os.path.basename(audio_filename).replace(".mp3", ".txt"))
+
+    with open(transcript_filename, "w", encoding="utf-8") as f:
+        f.write(transcription)
+    transcripts.append(transcription)
+    transcript_filenames.append(transcript_filename)
+
+
+# --- code cell 17 ---
+print(transcription)
+
+# --- code cell 18 ---
+display(Markdown(transcription))
+
+# --- code cell 19 ---
+# Count number of words returned
+print("Number of tokens in transcription:")
+print(len(transcription.split()))
+
+
+# --- code cell 20 ---
+# Use Groq / Whisper
+groq_url = "https://api.groq.com/openai/v1"
+groq_api_key = os.getenv('GROQ_API_KEY')
+groq = OpenAI(api_key=groq_api_key, base_url=groq_url)
+
+model = "whisper-large-v3"
+audio_file = audio_files[0]
+transcription = groq.audio.transcriptions.create(model=model, file=audio_file, response_format="text", language="fr")
+print(transcription)
+
+# --- code cell 21 ---
+agenda_path = "agendas/Ordre du jour du 2 décembre 2025.docx"
+
+# --- code cell 22 ---
+document = Document(agenda_path)
+
+# --- code cell 23 ---
+print(document.paragraphs[29].text)
+# print("\n")
+print(document.paragraphs[30].text)
+print(document.paragraphs[30].style)
+print(document.paragraphs[30].style.name)
+print(document.paragraphs[30]._p.pPr.numPr.ilvl.val)
+
+# --- code cell 24 ---
+def get_list_level(para):
+    pPr = para._p.pPr
+    if pPr is not None and pPr.numPr is not None:
+        ilvl = pPr.numPr.ilvl
+        if ilvl is not None:
+            return int(ilvl.val)
+    return None
+
+
+# --- code cell 25 ---
+from docx.oxml.ns import qn
+
+def get_paragraph_text_with_links(para):
+    """
+    Retourne le texte visible du paragraphe,
+    incluant le texte des hyperliens (sans l'URL).
+    """
+    texts = []
+
+    for child in para._p:
+        # Texte normal (runs)
+        if child.tag == qn("w:r"):
+            for node in child:
+                if node.tag == qn("w:t") and node.text:
+                    texts.append(node.text)
+
+        # Texte dans un hyperlien
+        elif child.tag == qn("w:hyperlink"):
+            for sub in child:
+                if sub.tag == qn("w:r"):
+                    for node in sub:
+                        if node.tag == qn("w:t") and node.text:
+                            texts.append(node.text)
+
+    return "".join(texts).strip()
+
+
+# --- code cell 26 ---
+from docx import Document
+
+def get_list_level(para):
+    pPr = para._p.pPr
+    if pPr is not None and pPr.numPr is not None:
+        ilvl = pPr.numPr.ilvl
+        if ilvl is not None:
+            return int(ilvl.val)
+    return None
+
+
+def docx_to_markdown(docx_path):
+    document = Document(docx_path)
+    markdown_lines = []
+
+    counters = [0, 0, 0, 0, 0]
+
+    for para in document.paragraphs:
+        raw_text = para.text.strip()
+        if not raw_text:
+            continue
+
+        # Titres
+        if para.style.name.startswith("Heading"):
+            level = int(para.style.name.replace("Heading ", ""))
+            markdown_lines.append("#" * level + " " + raw_text)
+            continue
+
+        # Listes numérotées Word (agenda)
+        list_level = get_list_level(para)
+        if list_level is not None:
+            counters[list_level] += 1
+            for i in range(list_level + 1, len(counters)):
+                counters[i] = 0
+
+            number = ".".join(str(counters[i]) for i in range(list_level + 1))
+
+            # Reconstruction avec gras (si possible)
+            formatted_text = ""
+            for run in para.runs:
+                if run.bold:
+                    formatted_text += f"**{run.text}**"
+                else:
+                    formatted_text += run.text
+
+            # 🔑 FALLBACK hyperliens / cas vides
+            if not formatted_text.strip():
+                formatted_text = raw_text
+
+            markdown_lines.append(f"{number}. {formatted_text.strip()}")
+            continue
+
+        # Listes à puces
+        if "List Bullet" in para.style.name:
+            formatted_text = ""
+            for run in para.runs:
+                if run.bold:
+                    formatted_text += f"**{run.text}**"
+                else:
+                    formatted_text += run.text
+
+            if not formatted_text.strip():
+                formatted_text = raw_text
+
+            markdown_lines.append(f"- {formatted_text.strip()}")
+            continue
+
+        # Texte normal
+        formatted_text = ""
+        for run in para.runs:
+            if run.bold:
+                formatted_text += f"**{run.text}**"
+            else:
+                formatted_text += run.text
+
+        if not formatted_text.strip():
+            formatted_text = raw_text
+
+        markdown_lines.append(formatted_text.strip())
+
+    return "\n\n".join(markdown_lines)
+
+# --- code cell 27 ---
+agenda_markdown = docx_to_markdown(agenda_path)
+
+display(Markdown(agenda_markdown))
+
+# --- code cell 28 ---
+# Load transcripts from transcript files
+transcript_base_filename = "2025-12-15 11-58-31 - Copie"
+transcript_folder = "transcripts"
+
+transcripts = []
+for filename in os.listdir(transcript_folder):
+    if filename.startswith(transcript_base_filename) and filename.endswith(".txt"):
+        filepath = os.path.join(transcript_folder, filename)
+        with open(filepath, "r", encoding="utf-8") as f:
+            transcript = f.read()
+            transcripts.append(transcript)
+
+# --- code cell 29 ---
+len(transcripts)
+
+# --- code cell 30 ---
+# Merge all transcripts into a single text
+full_text = "".join(transcripts)
+
+# --- code cell 31 ---
+display(Markdown(full_text))
+
+# --- code cell 32 ---
+# Tokenize the full text and count tokens
+tokenizer = AutoTokenizer.from_pretrained(LLAMA)
+tokens = tokenizer(full_text)
+num_tokens = len(tokens['input_ids'])
+print(f"Number of tokens in full transcription: {num_tokens}")
+
+# --- code cell 33 ---
+current_date = datetime.now().strftime("%y-%m-%d")
+system_message = f"""
+Current date: {current_date}.
+You produce minutes of meetings from transcripts, with summary, key discussion points,
+takeaways, votes, and action items with board members and general manager, in markdown format without code blocks, in french.
+"""
+
+user_prompt = f"""
+Below is an extract transcript of the C.A. of the Jeune Chambre de Drummond.
+Please write minutes in markdown without code blocks, including:
+- a summary with attendees, date, location
+- discussion points
+- takeaways
+- votes
+- action items with board members and general manager.
+If a section is not applicable, say so.
+If a vote is taken, please write it in the format:
+**Résolution [current_date yy-mm-dd]-[incremental_number]**
+Il est proposé par [name_1] et appuyé par [name_2] de [description of the motion].
+**-Adopté à l'unanimité-**
+Example:
+**Résolution 25-12-31-01**
+Il est proposé par Frédéric et appuyé par Laurianne d'ouvrir la réunion à 7h03. Le quorum est constaté.
+**-Adopté à l'unanimité-**
+======
+"""
+
+if 'agenda_markdown' in locals() and agenda_markdown.strip():
+    user_prompt += f"""
+Use the agenda to help structure the minutes. Here is the agenda:
+{agenda_markdown}
+"""
+
+user_prompt += f"""
+Here is the transcript:
+{full_text}
+"""
+
+messages = [
+    {"role": "system", "content": system_message},
+    {"role": "user", "content": user_prompt},
+]
+
+# --- code cell 34 ---
+quant_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_quant_type="nf4",
+)
+
+# --- code cell 35 ---
+tokenizer = AutoTokenizer.from_pretrained(LLAMA)
+tokenizer.pad_token = tokenizer.eos_token
+inputs = tokenizer.apply_chat_template(messages, return_tensors="pt").to("cuda")
+streamer = TextStreamer(tokenizer)
+model = AutoModelForCausalLM.from_pretrained(
+    LLAMA,
+    device_map="auto",
+    quantization_config=quant_config
+)
+outputs = model.generate(inputs, max_new_tokens=2000, streamer=streamer)
+
+# --- code cell 36 ---
+# Decode the output (Without the prompt)
+generated_text = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
+generated_text = generated_text.replace("assistant", "", 1).strip()  # Enlève seulement le premier "assistant"
+
+# --- code cell 37 ---
+model = "gpt-4o-mini"
+
+# --- code cell 38 ---
+openai = OpenAI()
+response = openai.chat.completions.create(
+    model=model,
+    messages=messages, 
+)
+
+# --- code cell 39 ---
+generated_text = response.choices[0].message.content
+
+# --- code cell 40 ---
+display(Markdown(generated_text))
+
+# --- code cell 41 ---
+# Save the minutes to a markdown file (in minutes/markdown folder)
+minutes_folder = "minutes/markdown"
+os.makedirs(minutes_folder, exist_ok=True)
+minutes_filename = os.path.join(minutes_folder, os.path.basename(audio_filename).replace(".mp3", ".md"))
+with open(minutes_filename, "w", encoding="utf-8") as f:
+    f.write(generated_text)
+
+# --- code cell 42 ---
+from docx import Document
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+# --- code cell 43 ---
+# Créer un document Word
+doc = Document()
+
+# Titre
+title = doc.add_heading('Compte-rendu de réunion', 0)
+title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+# Ajouter le contenu généré
+# Si le texte contient des sections markdown, on peut les parser
+lines = generated_text.split('\n')
+
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    
+    # Détection des titres markdown
+    if line.startswith('###'):
+        doc.add_heading(line.replace('###', '').strip(), level=3)
+    elif line.startswith('##'):
+        doc.add_heading(line.replace('##', '').strip(), level=2)
+    elif line.startswith('#'):
+        doc.add_heading(line.replace('#', '').strip(), level=1)
+    # Détection des textes entourés de **
+    elif line.startswith('**') and line.endswith('**'):
+        doc.add_heading(line.replace('**', '').strip(), level=3)
+    # Détection des listes
+    elif line.startswith('- ') or line.startswith('* '):
+        doc.add_paragraph(line[2:], style='List Bullet')
+    # Texte normal
+    else:
+        doc.add_paragraph(line)
+
+# Sauvegarder le document
+minutes_word_folder = "minutes/word"
+os.makedirs(minutes_word_folder, exist_ok=True)
+word_filename = os.path.join(minutes_word_folder, os.path.basename(audio_filename).replace(".mp3", ".docx"))
+doc.save(word_filename)
+print(f"Document Word sauvegardé: {word_filename}")

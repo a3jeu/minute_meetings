@@ -1,0 +1,52 @@
+[project]
+name = "minute_meetings"
+version = "0.1.0"
+description = "Minute meetings project"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv",
+    "ipykernel",
+    "ipywidgets",
+    "requests",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "transformers",
+    "tqdm",
+    "openai",
+    "datasets==3.6.0",
+    "google-generativeai",
+    "anthropic",
+    "chromadb",
+    "jupyter-dash",
+    "beautifulsoup4",
+    "pydub",
+    "modal",
+    "ollama",
+    "psutil",
+    "setuptools",
+    "speedtest-cli",
+    "sentence-transformers",
+    "feedparser",
+    "protobuf==3.20.2",
+    "wandb",
+    "accelerate",
+    "bitsandbytes",
+    "python-docx",
+    "docx2md",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
+torchaudio = { index = "pytorch-cu121" }
